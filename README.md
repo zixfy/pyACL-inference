@@ -1,8 +1,15 @@
 # pyACL-inference
-![Static Badge](https://img.shields.io/badge/license-MIT-blue?logo=Git&link=http%3A%2F%2Fgitlab.buaadml.info%2Fbdi%2Fpyacl-inference%2F-%2Fblob%2Fmain%2FLICENSE)
-![Static Badge](https://img.shields.io/badge/python-%3E%3D3.8-blue?logo=python&link=http%3A%2F%2Fgitlab.buaadml.info%2Fbdi%2Fpyacl-inference%2F-%2Fblob%2Fmain%2FLICENSE)
-![Static Badge](https://img.shields.io/badge/Group-BDI-orange?logo=gitlab&link=http%3A%2F%2Fgitlab.buaadml.info%2Fbdi)
-![Static Badge](https://img.shields.io/badge/Gitee-CANN%20samples-red?logo=gitee&link=https%3A%2F%2Fgitee.com%2Fascend%2Fsamples)
+
+<img alt="Static Badge" src="https://img.shields.io/badge/license-MIT-blue?logo=git&link=http%3A%2F%2Fgitlab.buaadml.info%2Fbdi%2Fpyacl-inference%2F-%2Fblob%2Fmain%2FLICENSE">
+
+<img alt="Static Badge" src="https://img.shields.io/badge/python-%3E%3D3.8-blue?logo=python">
+
+
+<img alt="Static Badge" src="https://img.shields.io/badge/Group-BDI-orange?logo=gitlab&link=http%3A%2F%2Fgitlab.buaadml.info%2Fbdi">
+
+<img alt="Static Badge" src="https://img.shields.io/badge/Gitee-samples-red?logo=gitee&cacheSeconds=https%3A%2F%2Fgitee.com%2Fascend%2Fsamples">
+
+<img alt="Static Badge" src="https://img.shields.io/badge/huawei-CANN-red?logo=huawei&logoColor=red&link=https%3A%2F%2Fwww.hiascend.com%2Fzh%2Fsoftware%2Fcann">
 
 ### TODO ###
 - [x] 修复使用numpy view可能无法正确memcpy底层数组到显存的bug
@@ -57,13 +64,12 @@ finalize_huawei_api()
 - `ACLNetHandler`不保护显存，使用时，需要将推理预处理、推理后处理、batch_size约束与`ACLNetHandler`封装成新的模型类再加入业务代码中
 
 
+
 ### Precision Loss ###
-| model/device       | batch_size | alignment to .onnx | inference time | inference speed |
-| ------------------ | ---------- | ------------------ | -------------- | --------------- |
-| TransReID(310P3)   | 16         | 99.9988%           | 8.539 ms/img   | 117.109 img/s   |
-| TransReID(310P3×2) | 16         | 99.9989%           | 5.174 ms/img   | 193.274 img/s   |
-
-
+| model/device       | batch_shape       | alignment to .onnx | inference time | inference speed |
+| ------------------ | ----------------- | ------------------ | -------------- | --------------- |
+| TransReID(310P3)   | [16, 3, 256, 128] | 99.9988%           | 8.539 ms/img   | 117.109 img/s   |
+| TransReID(310P3×2) | [16, 3, 256, 128] | 99.9989%           | 5.174 ms/img   | 193.274 img/s   |
 
 
 _Reference: pyACL doc_  [link](https://support.huawei.com/enterprise/zh/doc/EDOC1100164876/5bda6391)
