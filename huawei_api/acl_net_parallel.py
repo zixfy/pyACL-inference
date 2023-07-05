@@ -1,7 +1,7 @@
 # Any bug can be reported at http://gitlab.buaadml.info/bdi/pyacl-inference/-/issues
 # Doc: http://gitlab.buaadml.info/bdi/pyacl-inference/
 import sys
-from typing import List, Optional, Any, Dict, Tuple, Union, NoReturn, Type
+from typing import List, Optional, Any, Dict, Tuple, Union, NoReturn, Type, Callable
 import numpy as np
 import acl
 import threading
@@ -22,7 +22,6 @@ ACL_MEMCPY_DEVICE_TO_DEVICE = 3
 
 ACL_NONBLOCK = 0
 ACL_BLOCK = 1
-
 
 NPU_IO_DEBUG = False
 NPU_RESULT_DEBUG = False
@@ -102,19 +101,33 @@ def to_aligned_str(s: str, aligned_len: int = 50, padding_len: int = 15, padding
     return padding_char_left * padding_len + s + padding_char_right * padding_len
 
 
-def require_npu_context(func):
+def require_npu_context(func: Callable) -> Callable:
+    """A decorator for public methods in 'Net' class
+    Because Any call of pyacl API must set correct npu context for different model id and device id
+    :param func: public method in 'Net' class that invokes any pyacl API function
+    :return: a closure of decorated function that set context correctly ahead
+    """
+
     def wrapper(self, *args, **kwargs):
         acl.rt.set_context(self.context)
         return func(self, *args, **kwargs)
+
     return wrapper
 
 
-def using_huawei_api(func):
+def using_huawei_api(func: Callable) -> Callable:
+    """A decorator for any function that uses 'ACLNetHandler' class Since acl.init() / acl.finalize must be called
+    once in every process, so decorate any main runner function in process that use huawei model
+    :param func: runner function inferring to huawei model/API, like FeatureExtractor.run in project
+    :return: a closure of decorated function that setup and clear huawei pyACL things correctly
+    """
+
     def wrapper(*args, **kwargs):
         init_huawei_api()
         res = func(*args, **kwargs)
         finalize_huawei_api()
         return res
+
     return wrapper
 
 
@@ -127,20 +140,19 @@ class Net(object):
     Note: never care this class, use class ACLNetHandler below for wrapping model inference
     """
 
-    def __init__(self, device_id: int,
-                 model_path: str
-                 ):
+    def __init__(self, device_id: int, model_path: str):
         """Specify the NPU and .om model path, load model
         :param device_id: logical number of NPU, which can be obtained with command 'npu-smi info'
         :param model_path: any .om model path, only single input models are supported now
         """
 
         # setter
+        # dataset_list is to hold C-pointer to input/output's buffer memory on NPU
         self.dataset_list: List[Tuple[int, int]] = []
         self.device_id: int = device_id
         self.model_path: str = model_path
 
-        # Explicitly specifying the Device(NPU) used for inference
+        # Explicitly setup the Device(NPU) used for inference
         print(to_aligned_str("[NPU:{}] init resource stage".format(self.device_id)))
         ret = acl.rt.set_device(self.device_id)
         check_ret("acl.rt.set_device", ret)
@@ -151,7 +163,7 @@ class Net(object):
         # Note: context is unique in every thread
         self.context: int
         self.context, ret = acl.rt.create_context(self.device_id)
-        check_ret("acl.rt.create_context", ret)
+        ret1 = check_ret("acl.rt.create_context", ret)
 
         # setup Stream, which guarantees the synchronization of parallel computation in pyACL
         self.stream: int
@@ -164,7 +176,7 @@ class Net(object):
         check_ret("acl.mdl.load_from_file", ret)
 
         # get a aclmdlDesc* pointer in underlying C-implement
-        # aclmdlDesc is used to read
+        # aclmdlDesc is used to read IO information about model
         # Note: it's a c-pointer only for pyACL API
         self.model_desc: int
         self.model_desc = acl.mdl.create_desc()
@@ -181,7 +193,7 @@ class Net(object):
         self.output_acl_dtype_idxs: List[int]
         self.output_numpy_dtypes: List[Type]
         self.output_dims: List[Tuple]
-        self._print_model_info()
+        info = self._print_model_info()
         print(to_aligned_str("[NPU:{}] init resource success".format(self.device_id)))
         print()
 
@@ -223,6 +235,7 @@ class Net(object):
     def _print_model_info(self) -> NoReturn:
         """print model's information
         The number of input/output, the shape(dims) and data type of each input/output are logged
+        Note: only models with single input are supported now
         Note: check if it's same with .onnx, .pt model
         """
         self.input_num: int = acl.mdl.get_num_inputs(self.model_desc)
@@ -245,24 +258,26 @@ class Net(object):
                                                               acl_dtype_idx_to_name[self.output_acl_dtype_idxs[i]]))
 
     @require_npu_context
-    def get_input_batch_size(self):
+    def get_input_batch_size(self) -> int:
+        """Just get batch size for computation jobs dispatching
+        :return:batch size of .om model
+        """
         return acl.mdl.get_input_dims(self.model_desc, 0)[0]["dims"][0]
 
-    def _load_input_data(self, images_data):
-        # images_data = images_data.astype(self.input_numpy_dtype)
+    def _load_input_data(self, images_batch):
         # print("flags['OWNDATA'] before copy： {}", images_data.flags['OWNDATA'])
-        if images_data.dtype != self.input_numpy_dtype:
-            images_data = images_data.astype(self.input_numpy_dtype)
-        if not images_data.flags['OWNDATA']:
-            images_data = images_data.copy()
+        if images_batch.dtype != self.input_numpy_dtype:
+            images_batch = images_batch.astype(self.input_numpy_dtype)
+        if not images_batch.flags['OWNDATA']:
+            images_batch = images_batch.copy()
         # print("flags['OWNDATA'] after copy： {}", images_data.flags['OWNDATA'])
         if "bytes_to_ptr" in dir(acl.util):
-            bytes_data = images_data.tobytes()
+            bytes_data = images_batch.tobytes()
             img_ptr = acl.util.bytes_to_ptr(bytes_data)
         else:
-            img_ptr = acl.util.numpy_to_ptr(images_data)  # host ptr
+            img_ptr = acl.util.numpy_to_ptr(images_batch)  # host ptr
         # memcopy host to device
-        image_buffer_size = images_data.size * images_data.itemsize
+        image_buffer_size = images_batch.size * images_batch.itemsize
 
         img_device, ret = acl.rt.malloc(image_buffer_size, ACL_MEM_MALLOC_NORMAL_ONLY)
         check_ret("acl.rt.malloc", ret)
@@ -297,16 +312,16 @@ class Net(object):
                 check_ret("acl.destroy_data_buffer", ret)
         return output_data
 
-    def _load_data_to_npu(self, images_batches) -> NoReturn:
-        if NPU_IO_DEBUG:
-            print("data interaction from host to device")
-        dataset_list = []
+    def _load_data_to_npu(self, images_batches: List[np.ndarray]) -> List[Tuple[int, int]]:
+        """
+        :param images_batches:
+        :return:
+        """
+        dataset_list: List[Tuple[int, int]] = []
         for batch in images_batches:
             input_dataset_ptr = self._load_input_data(batch)
             output_dataset_ptr = self._load_output_data()
             dataset_list.append((input_dataset_ptr, output_dataset_ptr))
-        if NPU_IO_DEBUG:
-            print("data interaction from host to device success")
         return dataset_list
 
     @staticmethod
@@ -325,6 +340,10 @@ class Net(object):
 
     @require_npu_context
     def dispatch_parallel_job(self, image_batches: List[np.ndarray]):
+        """
+        :param image_batches:
+        :return:
+        """
         # copy images to device
         self.dataset_list = self._load_data_to_npu(image_batches)
         if NPU_IO_DEBUG:
@@ -341,9 +360,6 @@ class Net(object):
     def fetch_output_from_npu(self):
         ret = acl.rt.synchronize_stream(self.stream)
         check_ret("acl.rt.synchronize_stream", ret)
-
-        if NPU_IO_DEBUG:
-            print('callback func stage:')
         inference_outputs: List[List[np.ndarray]] = []
         for dataset in self.dataset_list:
             input_dataset_ptr, output_dataset_ptr = dataset
