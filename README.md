@@ -16,7 +16,7 @@
 
 1. 使用`ACLNetHandler`管理模型与推理所用`NPU`逻辑号，后者可在`npu-smi info`指令中查看
 2. 由于官方`API`的使用约束，使用华为模型的**每个进程**必须在始尾处调用`init_huawei_api/finalize_huawei_api`，或使用`using_huawei_api`装饰进程主函数
-3. 推理输入为`[batch, ...]`的`np.ndarray`；调用`ACLNetHandler.forward()`或`ACLNetHandler.__call__()`推理，会尽量使用指定的`npu_devices`并行推理
+3. 推理输入为`[batch, ...]`的`np.ndarray`；调用`ACLNetHandler.forward()`或`ACLNetHandler.__call__()`推理，会尽量使用指定的`npu_devices`并行推理；单输出模型推理输出为`np.ndarray`，多输出模型输出为`List[np.ndarray]`，具体大小/类型参见加载模型时志记的信息
 4. `ACLNetHandler`管理`NPU`资源，资源析构必须依赖`acl.rt / acl.mdl`，因此需要使用`release()`或`__del__()`方法显示析构，而不能依赖`GC`
 
 示例代码：
