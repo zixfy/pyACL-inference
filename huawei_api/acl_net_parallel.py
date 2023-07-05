@@ -79,7 +79,7 @@ acl_dtype_idx_to_numpy_dtype_idx = {
 
 def check_ret(message: str, ret: int):
     """
-    Huawei official implication,
+    Huawei official implement,
     check the return value of a call of pyACL API
     """
     if ret != ACL_SUCCESS:
@@ -257,35 +257,41 @@ class Net(object):
             print("└─── output {}: shape={}, dtype={}".format(i, acl.mdl.get_output_dims(self.model_desc, i)[0],
                                                               acl_dtype_idx_to_name[self.output_acl_dtype_idxs[i]]))
 
-    @require_npu_context
-    def get_input_batch_size(self) -> int:
-        """Just get batch size for computation jobs dispatching
-        :return:batch size of .om model
+    def _load_input_data(self, images_batch: np.ndarray) -> int:
+        """Copy numpy input to NPU memory
+        :param images_batch:List of input image batch, every batch's batch size must match .om model's batch size
+        Note: only single input flow are supported now.
+        :return: a pointer to aclmdlDataset, which holds buffer of inference input on NPU memory
         """
-        return acl.mdl.get_input_dims(self.model_desc, 0)[0]["dims"][0]
 
-    def _load_input_data(self, images_batch):
+        # convert numpy.ndarray into correct data type
+
         # print("flags['OWNDATA'] before copy： {}", images_data.flags['OWNDATA'])
         if images_batch.dtype != self.input_numpy_dtype:
             images_batch = images_batch.astype(self.input_numpy_dtype)
+
+        # Note: it's a undefined behavior to pass a numpy array view to acl.util.numpy_to_ptr,
+        #   so make sure numpy array OWN DATA
         if not images_batch.flags['OWNDATA']:
             images_batch = images_batch.copy()
         # print("flags['OWNDATA'] after copy： {}", images_data.flags['OWNDATA'])
+
+        # get C-pointer to ndarray data in numpy implement
         if "bytes_to_ptr" in dir(acl.util):
             bytes_data = images_batch.tobytes()
             img_ptr = acl.util.bytes_to_ptr(bytes_data)
         else:
-            img_ptr = acl.util.numpy_to_ptr(images_batch)  # host ptr
-        # memcopy host to device
-        image_buffer_size = images_batch.size * images_batch.itemsize
+            img_ptr = acl.util.numpy_to_ptr(images_batch)
 
+        # memcpy image ndarray to malloced memory on NPU
+        image_buffer_size = images_batch.size * images_batch.itemsize
         img_device, ret = acl.rt.malloc(image_buffer_size, ACL_MEM_MALLOC_NORMAL_ONLY)
         check_ret("acl.rt.malloc", ret)
         ret = acl.rt.memcpy(img_device, image_buffer_size, img_ptr,
                             image_buffer_size, ACL_MEMCPY_HOST_TO_DEVICE)
         check_ret("acl.rt.memcpy", ret)
 
-        # create dataset in device
+        # create aclmdlDataset C-pointer
         img_dataset = acl.mdl.create_dataset()
         img_data_buffer = acl.create_data_buffer(img_device, image_buffer_size)
         _, ret = acl.mdl.add_dataset_buffer(img_dataset, img_data_buffer)
@@ -295,13 +301,15 @@ class Net(object):
 
         return img_dataset
 
-    def _load_output_data(self):
+    def _load_output_data(self) -> int:
+        """Malloc memory on NPU to store inference output, indeterminate memory during inference need not be cared
+        :return: a pointer to aclmdlDataset, which holds buffer of inference output on NPU memory
+        """
         output_data = acl.mdl.create_dataset()
-        for i in range(self.output_num):
-            # check temp_buffer dtype
-            temp_buffer_size = acl.mdl.get_output_size_by_index(self.model_desc, i)
 
-            # Note: malloc on NPU, not CPU
+        # support multi-outputs model
+        for i in range(self.output_num):
+            temp_buffer_size = acl.mdl.get_output_size_by_index(self.model_desc, i)
             temp_buffer, ret = acl.rt.malloc(temp_buffer_size, ACL_MEM_MALLOC_NORMAL_ONLY)
             check_ret("acl.rt.malloc", ret)
 
@@ -313,9 +321,9 @@ class Net(object):
         return output_data
 
     def _load_data_to_npu(self, images_batches: List[np.ndarray]) -> List[Tuple[int, int]]:
-        """
-        :param images_batches:
-        :return:
+        """ load numpy.ndarray on CPU memory to NPU memory
+        :param images_batches: List of input image batch, every batch's batch size must match .om model's batch size
+        :return: List of input/output buffer pointer on NPU for each batch
         """
         dataset_list: List[Tuple[int, int]] = []
         for batch in images_batches:
@@ -324,8 +332,24 @@ class Net(object):
             dataset_list.append((input_dataset_ptr, output_dataset_ptr))
         return dataset_list
 
+    @require_npu_context
+    def dispatch_parallel_job(self, image_batches: List[np.ndarray]) -> NoReturn:
+        """Dispatch a list of batches for inference on self.context
+        :param image_batches: List of input image batch, every batch's batch size must match .om model's batch size
+        """
+        # copy images to device
+        self.dataset_list = self._load_data_to_npu(image_batches)
+
+        # async parallel computation
+        for input_dataset_ptr, output_dataset_ptr in self.dataset_list:
+            ret = acl.mdl.execute_async(self.model_id, input_dataset_ptr, output_dataset_ptr, self.stream)
+            check_ret("acl.mdl.execute_async", ret)
+
     @staticmethod
-    def _destroy_dataset(dataset_ptr: int):
+    def _destroy_dataset(dataset_ptr: int) -> NoReturn:
+        """Free NPU memory using aclmdlDataset Pointer
+         :param dataset_ptr:  ptr to input / output of inference
+        """
         num_of_data_buf = acl.mdl.get_dataset_num_buffers(dataset_ptr)
         for i in range(num_of_data_buf):
             data_buf = acl.mdl.get_dataset_buffer(dataset_ptr, i)
@@ -339,40 +363,33 @@ class Net(object):
         check_ret("acl.mdl.destroy_dataset", ret)
 
     @require_npu_context
-    def dispatch_parallel_job(self, image_batches: List[np.ndarray]):
+    def fetch_output_from_npu(self) -> List[List[np.ndarray]]:
+        """Synchronize inference computation on each parallelled NPU device, and get inference output
+        :return: 2-dim List of each batch's numpy single or multi   (on CPU)
+        Note: single inference output is also a list of one ndarray
         """
-        :param image_batches:
-        :return:
-        """
-        # copy images to device
-        self.dataset_list = self._load_data_to_npu(image_batches)
-        if NPU_IO_DEBUG:
-            print('execute stage:')
-        for input_dataset_ptr, output_dataset_ptr in self.dataset_list:
-            # ret = acl.mdl.execute(self.model_id, input_dataset_ptr, output_dataset_ptr)
-            # check_ret("acl.mdl.execute", ret)
-            ret = acl.mdl.execute_async(self.model_id, input_dataset_ptr, output_dataset_ptr, self.stream)
-            check_ret("acl.mdl.execute_async", ret)
-        if NPU_IO_DEBUG:
-            print('execute stage success')
 
-    @require_npu_context
-    def fetch_output_from_npu(self):
+        # Synchronize computation
         ret = acl.rt.synchronize_stream(self.stream)
         check_ret("acl.rt.synchronize_stream", ret)
         inference_outputs: List[List[np.ndarray]] = []
+
+        # for each batch
         for dataset in self.dataset_list:
             input_dataset_ptr, output_dataset_ptr = dataset
             current_inference_output: List[np.ndarray] = []
-            # device to host
+
+            # memcpy inference output from NPU to CPU
             num_of_data_buf = acl.mdl.get_dataset_num_buffers(output_dataset_ptr)
             for i in range(num_of_data_buf):
                 temp_output_buf = acl.mdl.get_dataset_buffer(output_dataset_ptr, i)
                 infer_output_ptr = acl.get_data_buffer_addr(temp_output_buf)
                 infer_output_size = acl.get_data_buffer_size_v2(temp_output_buf)
-                output_host, ret = acl.rt.malloc_host(infer_output_size)
+
+                # malloc on CPU memory
+                ptr, ret = acl.rt.malloc_host(infer_output_size)
                 check_ret("acl.rt.malloc_host", ret)
-                ret = acl.rt.memcpy(output_host,
+                ret = acl.rt.memcpy(ptr,
                                     infer_output_size,
                                     infer_output_ptr,
                                     infer_output_size,
@@ -380,29 +397,58 @@ class Net(object):
                 check_ret("acl.rt.memcpy", ret)
                 dims, ret = acl.mdl.get_cur_output_dims(self.model_desc, i)
                 check_ret("acl.mdl.get_cur_output_dims", ret)
-                ptr = output_host
+
+                # setup correct data type and shape for each output flow in model
                 if "ptr_to_bytes" in dir(acl.util):
                     bytes_data = acl.util.ptr_to_bytes(ptr, infer_output_size)
                     data = np.frombuffer(bytes_data, dtype=self.output_numpy_dtypes[i]).reshape(self.output_dims[i])
                 else:
                     data = acl.util.ptr_to_numpy(ptr, self.output_dims[i],
                                                  acl_dtype_idx_to_numpy_dtype_idx[self.output_acl_dtype_idxs[i]])
+
+                # free acl.rt.malloc_host(), to avoid memory leakage
                 current_inference_output.append(data.copy())
-                acl.rt.free_host(output_host)
+                acl.rt.free_host(ptr)
+            # free memory buffer on NPU
             self._destroy_dataset(input_dataset_ptr)
             self._destroy_dataset(output_dataset_ptr)
             inference_outputs.append(current_inference_output)
         return inference_outputs
 
     @require_npu_context
-    def synchronize_device(self):
+    def synchronize_device(self) -> NoReturn:
+        # synchronize NPU devices (according to official guide)
         acl.rt.synchronize_device(self.device_id)
+
+    @require_npu_context
+    def get_input_batch_size(self) -> int:
+        """Just get batch size for computation jobs dispatching
+        :return:batch size of .om model
+        """
+        return acl.mdl.get_input_dims(self.model_desc, 0)[0]["dims"][0]
 
 
 # Exposed to outer of package
 class ACLNetHandler(object):
+    """Model loading, Memory Manage and Parallel Inference for .om model
+    1. Use ACLNetHandler to specify the NPU logic number used in inference, which can be found
+    using 'npu-smi info' in CANN
+    2. Due to the use constraints of pyACL API, each process using the Huawei model must invoke
+    init_huawei_api/finalize_huawei_api at the beginning/end, or use using_huawei_api to decorate the main runner
+    function of the process
+    3. Inference input Type is np.ndarray of shape [batch, ...]; calling forward() or __call__() will try to use the
+    specified npu_devices for parallel inference; The inference output of the single-output model is
+    np.ndarray, and the output of the multi-output model is List[np.ndarray]. For the specific sizes NPU resources, whose destruction must rely on acl.rt / acl.mdl, so you need to explicitly
+    use release() or __del__() method to unload model instead of relying on python-GCe/type,
+    please refer to the information printed when loading the model
+    4. ACLNetHandler manag
+    """
 
     def __init__(self, npu_device_ids: Union[List[int], int], om_model_path: str):
+        """Load model from file, specify NPU device for inference
+        :param npu_device_ids: logic NPU number(s), not physical NPU number(s), typically: [0,1] or 0
+        :param om_model_path: model to be Data&Model paralleled
+        """
         # print(om_model_path)
         self.npu_device_ids = [npu_device_ids] if isinstance(npu_device_ids, int) else npu_device_ids
         if len(self.npu_device_ids) == 0:
@@ -413,6 +459,16 @@ class ACLNetHandler(object):
         self.batch_size = self.acl_net[0].get_input_batch_size()
 
     def forward(self, images_data: np.ndarray) -> Union[List[np.ndarray], np.ndarray]:
+        """Parallel inference
+
+        :param images_data: np.ndarray with shape [batch, *dims], axis-0 (batch) is dispatched to at most len(
+        self.acl_net) for parallel computation
+        Note: batch that can't be divided by .om model's batch_size is also okay
+        :return:The inference output of the single-output model is np.ndarray,
+        and the output of the multi-output model is List[np.ndarray]
+        """
+
+        # padding to fir .om model's batch_size
         real_batch_size: int = images_data.shape[0]
         rem: int = real_batch_size % self.batch_size
         if rem != 0:
@@ -420,20 +476,26 @@ class ACLNetHandler(object):
                 (0, self.batch_size - rem) if i == 0 else (0, 0) for i in range(len(images_data.shape)))
             # Pad zeros along the 0th axis
             images_data = np.pad(images_data, padding_config, mode='constant')
+
+        # split input many batches
         jobs = [images_data[i:i + self.batch_size] for i in range(0, images_data.shape[0], self.batch_size)]
         jobs_num = len(jobs)
         real_npu_num = min(len(self.acl_net), jobs_num)
         q: int = jobs_num // real_npu_num
         r: int = jobs_num % real_npu_num
+
+        # dispatch batches fairly to {real_npu_num} NPUs
         dispatched_jobs: List[List[np.ndarray]] = []
         idx = 0
         for i in range(real_npu_num):
             nxt: int = idx + q + (1 if i < r else 0)
             dispatched_jobs.append(jobs[idx:nxt])
             idx = nxt
-        # print("dispatch_jobs: ", just_get_shape(dispatched_jobs))
+
+        # start inference on each NPU
         result = self._forward(dispatched_jobs)
 
+        # assume input / output has same batch_size
         for i in range(len(result)):
             result[i] = result[i][:real_batch_size, ...]
         if len(result) == 1:
@@ -441,8 +503,14 @@ class ACLNetHandler(object):
         return result
 
     def _forward(self, images_batches_list: List[List[np.ndarray]]) -> List[np.ndarray]:
+        """Invoke execute_async on NPU, and synchronize NPU devices to get results
+
+        :param images_batches_list: List of dispatched batches for each used NPU
+        :return:List of inference outputs of model
+        """
         real_npu_num = len(images_batches_list)
 
+        # synchronize, and gather output
         for i in range(real_npu_num):
             self.acl_net[i].dispatch_parallel_job(images_batches_list[i])
         tmp = self.acl_net[0].fetch_output_from_npu()
@@ -451,14 +519,18 @@ class ACLNetHandler(object):
             for batch_outputs in self.acl_net[i].fetch_output_from_npu():
                 for output_idx, batch_output in enumerate(batch_outputs):
                     output[output_idx].append(batch_output)
+
+        # synchronize device API
         for i in range(real_npu_num):
             self.acl_net[i].synchronize_device()
-        # print("_forward: {}".format(just_get_shape(output)))
+
+        # cat gathered result
         stacked_output = [np.concatenate(o, axis=0) for o in output]
         return stacked_output
 
     def __call__(self, batch_images: Union[List[np.ndarray], np.ndarray]) \
             -> Union[List[np.ndarray], np.ndarray]:
+        # proxy
         return self.forward(batch_images)
 
     def __del__(self):
@@ -466,13 +538,8 @@ class ACLNetHandler(object):
             del self.acl_net[-1]
 
     def release(self):
+        # proxy
         self.__del__()
-
-
-def just_get_shape(x: Union[List, np.ndarray]):
-    if isinstance(x, list):
-        return [just_get_shape(i) for i in x]
-    return x.shape
 
 
 # Exposed to outer of package

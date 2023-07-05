@@ -9,6 +9,7 @@
 ### TODO ###
 - [x] 修复使用numpy view可能无法正确memcpy底层数组到显存的bug
 - [x] 动态batch推理
+- [x] 增加对多输出模型的支持
 - [ ] 增加对多输入模型的支持
 ### Quick Start ###
 
