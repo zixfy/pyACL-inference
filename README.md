@@ -1,7 +1,7 @@
 # pyACL-inference
 
 [![](https://img.shields.io/badge/license-MIT-blue?logo=git&link=http%3A%2F%2Fgitlab.buaadml.info%2Fbdi%2Fpyacl-inference%2F-%2Fblob%2Fmain%2FLICENSE)](http://gitlab.buaadml.info/bdi/pyacl-inference/-/blob/main/LICENSE)
-![](https://img.shields.io/badge/python-%3E%3D3.8-blue?logo=python)
+[![](https://img.shields.io/badge/python-%3E%3D3.8-blue?logo=python)]()
 [![](https://img.shields.io/badge/Group-BDI-orange?logo=gitlab&link=http%3A%2F%2Fgitlab.buaadml.info%2Fbdi)](http://gitlab.buaadml.info/bdi)
 [![](https://img.shields.io/badge/Gitee-samples-red?logo=gitee&cacheSeconds=https%3A%2F%2Fgitee.com%2Fascend%2Fsamples)](https://gitee.com/ascend/samples)
 [![](https://img.shields.io/badge/huawei-CANN-red?logo=huawei&logoColor=red&link=https%3A%2F%2Fwww.hiascend.com%2Fzh%2Fsoftware%2Fcann)](https://www.hiascend.com/zh/software/cann)
