@@ -5,7 +5,7 @@
 ![Static Badge](https://img.shields.io/badge/Gitee-CANN%20samples-red?logo=gitee&link=https%3A%2F%2Fgitee.com%2Fascend%2Fsamples)
 
 ### TODO ###
-- [x] 修复使用numpy view
+- [x] 修复使用numpy view可能无法正确memcpy底层数组到显存的bug
 - [x] 动态batch推理
 - [ ] 增加对多输入模型的支持
 ### Quick Start ###
@@ -53,7 +53,7 @@ finalize_huawei_api()
 - 单次推理内是并行的，两次推理之间是需要同步的
 - 现不支持多输入模型，`ACLNetHandler.forward()`只接受单`np.ndarray`参数
 - 推理输入数据`batch_size`小于`.om`模型真实`batch_size`×使用`NPU`数时，不会启用并行推理或并行任务分配是不公平的，因此业务中实际推理`batch_size`需视使用`NPU`数而定
-- `ACLNetHandler`不对输入`np.ndarray`数据维度、大小作任何检查（但在推理时），不保证输入不符预期时一定能抛出异常
+- `ACLNetHandler`不对输入`np.ndarray`数据维度、大小作任何检查（但在推理时必定会将输入`numpy`数组数据类型与`.om`模型保持一致），不保证输入不符预期时一定能抛出异常
 - `ACLNetHandler`不保护显存，使用时，需要将推理预处理、推理后处理、batch_size约束与`ACLNetHandler`封装成新的模型类再加入业务代码中
 
 
