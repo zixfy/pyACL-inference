@@ -438,10 +438,10 @@ class ACLNetHandler(object):
     function of the process
     3. Inference input Type is np.ndarray of shape [batch, ...]; calling forward() or __call__() will try to use the
     specified npu_devices for parallel inference; The inference output of the single-output model is
-    np.ndarray, and the output of the multi-output model is List[np.ndarray]. For the specific sizes NPU resources, whose destruction must rely on acl.rt / acl.mdl, so you need to explicitly
-    use release() or __del__() method to unload model instead of relying on python-GCe/type,
+    np.ndarray, and the output of the multi-output model is List[np.ndarray]. For specific data-type and shape,
     please refer to the information printed when loading the model
-    4. ACLNetHandler manag
+    4. ACLNetHandler manages NPU resources, whose destruction must rely on acl.rt / acl.mdl, so you need to explicitly
+    use release() or __del__() method to unload model instead of relying on python-GCe/type,
     """
 
     def __init__(self, npu_device_ids: Union[List[int], int], om_model_path: str):
@@ -534,12 +534,12 @@ class ACLNetHandler(object):
         return self.forward(batch_images)
 
     def __del__(self):
-        while len(self.acl_net) > 0:
-            del self.acl_net[-1]
+        # proxy
+        self.release()
 
     def release(self):
-        # proxy
-        self.__del__()
+        while len(self.acl_net) > 0:
+            del self.acl_net[-1]
 
 
 # Exposed to outer of package
