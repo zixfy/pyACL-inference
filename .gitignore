@@ -2,3 +2,5 @@
 .idea
 *.om
 *.onnx
+.fleet
+huawei_api/test

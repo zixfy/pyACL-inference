@@ -22,14 +22,28 @@
 
 示例代码：
 
+推荐写法（RAII风格）
 ```python
-from huawei_api import ACLNetHandler, using_huawei_api
-
+from huawei_api import ACLNetHandler, using_huawei_api, using_acl_net_handler
+import numpy as np
 @using_huawei_api
 def run():
-    huawei_model = ACLNetHandler(npu_device_ids=[0, 1],om_model_path="/root/disk/zzx/huawei-npu/transreid_bs16_highprecision.om")
-    dummmy = np.random.random((16 * 4, 3, 256, 128)).astype(np.float32)
-    output = huawei_model(dummmy)
+    with using_acl_net_handler(npu_device_ids=[0, 1],om_model_path="/path/to/model.om") as net:
+        dummy = np.random.random((16 * 4, 3, 256, 128)).astype(np.float32)
+        output = net(dummy)
+        print("output shape: ", output.shape)
+run()
+```
+or
+
+```python
+from huawei_api import ACLNetHandler, using_huawei_api
+import numpy as np
+@using_huawei_api
+def run():
+    huawei_model = ACLNetHandler(npu_device_ids=[0, 1],om_model_path="/path/to/model.om")
+    dummy = np.random.random((16 * 4, 3, 256, 128)).astype(np.float32)
+    output = huawei_model(dummy)
     print("output shape: ", output.shape)
     huawei_model.release()
 run()
@@ -39,18 +53,20 @@ or
 
 ```python
 from huawei_api import ACLNetHandler, init_huawei_api, finalize_huawei_api
-
+import numpy as np
 init_huawei_api()
 
-huawei_model = ACLNetHandler(npu_device_ids=[1],om_model_path="/root/disk/zzx/huawei-npu/transreid_bs16_highprecision.om")
-dummmy = np.random.random((16 * 4, 3, 256, 128)).astype(np.float32)
-output = huawei_model(dummmy)
+huawei_model = ACLNetHandler(npu_device_ids=[1],om_model_path="/path/to/model.om")
+dummy = np.random.random((16 * 4, 3, 256, 128)).astype(np.float32)
+output = huawei_model(dummy)
 del huawei_model
 # or huawei_model.release()
 
 finalize_huawei_api()
 ```
+一个可能期望的输出：
 
+![](.assets/1.png)
 ### Warnings ###
 
 - 单次推理内是并行的，两次推理之间是需要同步的

@@ -5,6 +5,7 @@ from typing import List, Optional, Any, Dict, Tuple, Union, NoReturn, Type, Call
 import numpy as np
 import acl
 import threading
+from contextlib import contextmanager
 
 # error code
 ACL_SUCCESS = 0
@@ -555,3 +556,13 @@ def finalize_huawei_api() -> NoReturn:
     # Note: must be manually invoked in every process's ending
     ret = acl.finalize()
     check_ret("acl.finalize", ret)
+
+
+@contextmanager
+def using_acl_net_handler(*args, **kwargs):
+    # Set up code here
+    net = ACLNetHandler(*args, **kwargs)
+    try:
+        yield net
+    finally:
+        net.release()
